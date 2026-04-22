@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package blockchain;
+
+// Minimal proto for parallel TX simulator: transactions and batches only.
+// No Block, Challenge, or other chain types.
+
+message Transaction {
+    uint64 nonce = 1;
+    uint32 expiry_block = 2;
+    bytes source_address = 3;   // 20 bytes
+    bytes dest_address = 4;      // 20 bytes
+    uint64 value = 5;
+    uint32 fee = 6;
+    bytes signature = 7;        // 48 bytes BLS
+}
+
+message TransactionBatch {
+    repeated Transaction transactions = 1;
+    uint32 count = 2;
+}
