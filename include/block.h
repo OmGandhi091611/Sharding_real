@@ -10,6 +10,12 @@ typedef struct {
     uint32_t num_shards;
 } DispatchHeader;
 
+/* Sent by the assigner to the leader after all txs + RoundEnds are dispatched */
+typedef struct {
+    uint32_t round_number;
+    double   dispatch_duration_ms;   /* real measured dispatch time */
+} DispatchDone;
+
 /* Sent by the assigner to every shard after all txs are dispatched for a round */
 typedef struct {
     uint32_t round_number;
@@ -32,8 +38,10 @@ typedef struct {
     uint32_t total_tx_count;    /* sum of all shard tx_counts */
     uint64_t total_fees;        /* sum of all shard total_fees */
     uint8_t  merkle_root[32];   /* combined hash of all shard merkle_roots */
-    double   block_time_ms;     /* time from round start to block finalized */
-    double   tps;               /* total_tx_count / block_time_ms * 1000 */
+    double   processing_latency_ms;  /* parallel tx processing time (ROUND_START → leader done) */
+    double   coord_latency_ms;       /* dispatch wait + follower summary collection */
+    double   block_time_ms;          /* aggregate: processing + coordination */
+    double   tps;                    /* total_tx_count / block_time_ms * 1000 */
 } Block;
 
 #endif /* BLOCK_H */

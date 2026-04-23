@@ -22,11 +22,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/time.h>
 #include <zmq.h>
 
 #define BASE_TX_PORT       5560
-#define LEADER_WAIT_MS     20    /* wait after dispatch header before broadcasting */
 #define SUB_CONNECT_WAIT_PER_FOLLOWER_MS 50  /* 50ms per follower for SUB socket connect */
 
 /* PUB and result ports are placed after all shard TX ports to avoid conflicts:
@@ -36,8 +36,36 @@
  */
 #define LEADER_PUB_PORT(n)    (BASE_TX_PORT + (n))
 #define LEADER_RESULT_PORT(n) (BASE_TX_PORT + (n) + 1)
+#define DISPATCH_DONE_PORT(n) (BASE_TX_PORT + (n) + 2)
 
-static unsigned int g_proc_us = 1000;  /* simulated processing time per tx (microseconds) */
+static unsigned int g_proc_us    = 1000;
+static int          g_block_size = 0;
+static FILE*        g_csv        = NULL;
+static int          g_num_shards = 4;
+
+/* accumulators — updated each block, flushed on SIGTERM */
+static double   g_sum_block_time = 0.0;
+static double   g_sum_tps        = 0.0;
+static uint64_t g_total_tx       = 0;
+static int      g_block_count    = 0;
+
+static void write_csv_summary(void) {
+    if (!g_csv || g_block_count == 0) return;
+    fprintf(g_csv, "%lu,%d,%.2f,%.2f,%d\n",
+            (unsigned long)g_total_tx,
+            g_block_size,
+            g_sum_block_time / g_block_count,
+            g_sum_tps        / g_block_count,
+            g_num_shards);
+    fflush(g_csv);
+}
+
+static void handle_sigterm(int sig) {
+    (void)sig;
+    write_csv_summary();
+    if (g_csv) fclose(g_csv);
+    _exit(0);
+}
 
 static double now_ms(void) {
     struct timeval tv;
@@ -116,8 +144,9 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
         return;
     }
 
-    int pub_port     = LEADER_PUB_PORT(num_shards);
-    int results_port = LEADER_RESULT_PORT(num_shards);
+    int pub_port      = LEADER_PUB_PORT(num_shards);
+    int results_port  = LEADER_RESULT_PORT(num_shards);
+    int done_port     = DISPATCH_DONE_PORT(num_shards);
 
     void* pub = zmq_socket(ctx, ZMQ_PUB);
     snprintf(addr, sizeof(addr), "tcp://*:%d", pub_port);
@@ -126,6 +155,10 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
     void* pull_results = zmq_socket(ctx, ZMQ_PULL);
     snprintf(addr, sizeof(addr), "tcp://*:%d", results_port);
     zmq_bind(pull_results, addr);
+
+    void* pull_done = zmq_socket(ctx, ZMQ_PULL);
+    snprintf(addr, sizeof(addr), "tcp://*:%d", done_port);
+    zmq_bind(pull_done, addr);
 
     /* Wait for all followers to connect their SUB sockets before first publish.
      * 50ms per follower scales safely up to 32+ shards. */
@@ -159,17 +192,21 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
             round++;
         }
 
-        /* Wait for assigner to finish dispatching txs to all shards */
-        usleep(LEADER_WAIT_MS * 1000);
+        /* Wait for assigner to signal dispatch is complete — real measured duration */
+        DispatchDone done_msg;
+        zmq_recv(pull_done, &done_msg, sizeof(DispatchDone), 0);
+        double t_dispatch_done = now_ms();
 
         /* Broadcast round start to all followers */
         char msg[64];
         snprintf(msg, sizeof(msg), "ROUND_START:%u", round);
         zmq_send(pub, msg, strlen(msg), 0);
+        double t_round_start = now_ms();
         printf("[shard %d | LEADER] round %u announced\n", shard_id, round);
 
         /* Process own transactions */
         ShardSummary own = process_transactions(pull_tx, (uint32_t)shard_id);
+        double t_proc_done = now_ms();
         printf("[shard %d | LEADER] processed %u txs  fees=%lu\n",
                shard_id, own.tx_count, (unsigned long)own.total_fees);
 
@@ -190,6 +227,7 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
             summaries[1 + results_received] = s;
             results_received++;
         }
+        double t_summaries_done = now_ms();
 
         /* Assemble block from all summaries */
         Block block;
@@ -211,7 +249,9 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
         free(all_roots);
         free(summaries);
 
-        block.block_time_ms = now_ms() - block_start;
+        block.processing_latency_ms = t_proc_done - t_round_start;
+        block.coord_latency_ms      = (t_dispatch_done - block_start) + (t_summaries_done - t_proc_done);
+        block.block_time_ms         = t_summaries_done - block_start;
         if (block.block_time_ms < 0) block.block_time_ms = 0;
         block.tps = block.block_time_ms > 0
                     ? (block.total_tx_count / block.block_time_ms) * 1000.0
@@ -221,19 +261,27 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
         bytes_to_hex_buf(block.merkle_root, 32, root_hex);
         root_hex[64] = '\0';
 
-        printf("\n=== BLOCK %u FINALIZED ===\n",   block.block_number);
-        printf("  Shards    : %u\n",                block.num_shards);
-        printf("  Total TXs : %u\n",                block.total_tx_count);
-        printf("  Total fees: %lu\n",               (unsigned long)block.total_fees);
-        printf("  Merkle    : %.16s...\n",           root_hex);
-        printf("  Block time: %.2f ms\n",            block.block_time_ms);
-        printf("  TPS       : %.2f\n",               block.tps);
-        printf("=========================\n\n");
+        printf("\n=== BLOCK %u FINALIZED ===\n",        block.block_number);
+        printf("  Shards          : %u\n",              block.num_shards);
+        printf("  Total TXs       : %u\n",              block.total_tx_count);
+        printf("  Total fees      : %lu\n",             (unsigned long)block.total_fees);
+        printf("  Merkle          : %.16s...\n",        root_hex);
+        printf("  Processing time : %.2f ms\n",         block.processing_latency_ms);
+        printf("  Coordination    : %.2f ms\n",         block.coord_latency_ms);
+        printf("  Block time      : %.2f ms  (aggregate)\n", block.block_time_ms);
+        printf("  TPS             : %.2f\n",             block.tps);
+        printf("==========================\n\n");
+
+        g_sum_block_time += block.block_time_ms;
+        g_sum_tps        += block.tps;
+        g_total_tx       += block.total_tx_count;
+        g_block_count++;
     }
 
     zmq_close(pull_tx);
     zmq_close(pub);
     zmq_close(pull_results);
+    zmq_close(pull_done);
 }
 
 static void run_follower(void* ctx, int shard_id, int tx_port, int num_shards) {
@@ -299,14 +347,25 @@ int main(int argc, char* argv[]) {
             num_shards = atoi(argv[++i]);
         else if (strcmp(argv[i], "--proc-us") == 0 && i + 1 < argc)
             g_proc_us = (unsigned int)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--block-size") == 0 && i + 1 < argc)
+            g_block_size = atoi(argv[++i]);
     }
+
+    g_num_shards = num_shards;
 
     void* ctx = zmq_ctx_new();
 
-    if (shard_id == 0)
+    if (shard_id == 0) {
+        g_csv = fopen("results.csv", "a");
+        if (!g_csv)
+            fprintf(stderr, "[shard 0 | LEADER] warning: could not open results.csv\n");
+        signal(SIGTERM, handle_sigterm);
+        signal(SIGINT,  handle_sigterm);
         run_leader(ctx, shard_id, port, num_shards);
-    else
+        if (g_csv) fclose(g_csv);
+    } else {
         run_follower(ctx, shard_id, port, num_shards);
+    }
 
     zmq_ctx_destroy(ctx);
     return 0;

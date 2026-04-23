@@ -13,6 +13,7 @@ typedef struct {
     uint32_t  round_number;
     void*     zmq_ctx;
     void*     push_socks[MAX_SHARDS];
+    void*     done_sock;             /* PUSH — sends DispatchDone to leader after each round */
     char      shard_addrs[MAX_SHARDS][64];
     uint64_t  assigned_counts[MAX_SHARDS];
 } ShardAssigner;

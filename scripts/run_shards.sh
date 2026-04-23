@@ -67,4 +67,4 @@ echo "Shard logs:   tail -f $LOG_DIR/shard_1.log  (and shard_2, shard_3, ...)"
 echo ""
 
 # Start leader in foreground — block output prints here
-$BUILD/shard_worker 0 $BASE_PORT --num-shards $NUM_SHARDS --proc-us $PROC_US
+$BUILD/shard_worker 0 $BASE_PORT --num-shards $NUM_SHARDS --proc-us $PROC_US --block-size $BLOCK_SIZE
