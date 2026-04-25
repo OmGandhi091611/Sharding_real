@@ -78,16 +78,21 @@ void shard_assigner_dispatch(ShardAssigner* sa, Mempool* pool, uint64_t round_st
     if (exact == 0) exact = sa->num_shards;
 
     Transaction* drain_buf[MEMPOOL_MAX_SIZE];
-    uint32_t count = mempool_drain(pool, drain_buf, exact);
+    uint8_t (*pubkey_buf)[32] = (uint8_t (*)[32])safe_malloc((size_t)MEMPOOL_MAX_SIZE * 32);
+    uint32_t count = mempool_drain(pool, drain_buf, pubkey_buf, exact);
 
     for (uint32_t i = 0; i < count; i++) {
         Transaction* tx = drain_buf[i];
         uint32_t shard_id = shard_for_tx(tx, sa->num_shards);
 
-        zmq_send(sa->push_socks[shard_id], tx, sizeof(Transaction), 0);
+        TxWithPubkey twp;
+        memcpy(&twp.tx, tx, sizeof(Transaction));
+        memcpy(twp.pubkey, pubkey_buf[i], 32);
+        zmq_send(sa->push_socks[shard_id], &twp, sizeof(TxWithPubkey), 0);
         sa->assigned_counts[shard_id]++;
         transaction_destroy(tx);
     }
+    free(pubkey_buf);
 
     /* Send RoundEnd marker to every shard so workers know exactly when to stop draining */
     for (uint32_t i = 0; i < sa->num_shards; i++) {

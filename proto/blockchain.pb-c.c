@@ -502,7 +502,7 @@ void   blockchain__difficulty_state__free_unpacked
   assert(message->base.descriptor == &blockchain__difficulty_state__descriptor);
   protobuf_c_message_free_unpacked ((ProtobufCMessage*)message, allocator);
 }
-static const ProtobufCFieldDescriptor blockchain__transaction__field_descriptors[7] =
+static const ProtobufCFieldDescriptor blockchain__transaction__field_descriptors[8] =
 {
   {
     "nonce",
@@ -588,12 +588,25 @@ static const ProtobufCFieldDescriptor blockchain__transaction__field_descriptors
     0,             /* flags */
     0,NULL,NULL    /* reserved1,reserved2, etc */
   },
+  {
+    "public_key",
+    8,
+    PROTOBUF_C_LABEL_NONE,
+    PROTOBUF_C_TYPE_BYTES,
+    0,   /* quantifier_offset */
+    offsetof(Blockchain__Transaction, public_key),
+    NULL,
+    NULL,
+    0,             /* flags */
+    0,NULL,NULL    /* reserved1,reserved2, etc */
+  },
 };
 static const unsigned blockchain__transaction__field_indices_by_name[] = {
   3,   /* field[3] = dest_address */
   1,   /* field[1] = expiry_block */
   5,   /* field[5] = fee */
   0,   /* field[0] = nonce */
+  7,   /* field[7] = public_key */
   6,   /* field[6] = signature */
   2,   /* field[2] = source_address */
   4,   /* field[4] = value */
@@ -601,7 +614,7 @@ static const unsigned blockchain__transaction__field_indices_by_name[] = {
 static const ProtobufCIntRange blockchain__transaction__number_ranges[1 + 1] =
 {
   { 1, 0 },
-  { 0, 7 }
+  { 0, 8 }
 };
 const ProtobufCMessageDescriptor blockchain__transaction__descriptor =
 {
@@ -611,7 +624,7 @@ const ProtobufCMessageDescriptor blockchain__transaction__descriptor =
   "Blockchain__Transaction",
   "blockchain",
   sizeof(Blockchain__Transaction),
-  7,
+  8,
   blockchain__transaction__field_descriptors,
   blockchain__transaction__field_indices_by_name,
   1,  blockchain__transaction__number_ranges,

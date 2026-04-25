@@ -25,6 +25,7 @@
 #include <signal.h>
 #include <sys/time.h>
 #include <zmq.h>
+#include <omp.h>
 
 #define BASE_TX_PORT       5560
 #define SUB_CONNECT_WAIT_PER_FOLLOWER_MS 50  /* 50ms per follower for SUB socket connect */
@@ -38,7 +39,7 @@
 #define LEADER_RESULT_PORT(n) (BASE_TX_PORT + (n) + 1)
 #define DISPATCH_DONE_PORT(n) (BASE_TX_PORT + (n) + 2)
 
-static unsigned int g_proc_us    = 1000;
+static int          g_par_threads = 4;   /* OpenMP threads for parallel tx processing */
 static int          g_block_size = 0;
 static FILE*        g_csv        = NULL;
 static int          g_num_shards = 4;
@@ -74,62 +75,91 @@ static double now_ms(void) {
 }
 
 /*
- * Read exactly the transactions for this round from pull_sock.
- * The assigner sends a RoundEnd marker after all txs — we use its tx_count
- * to know when to stop, so we never accidentally drain next-round txs.
+ * Collect all transactions for this round, then process them in parallel.
+ *
+ * Phase 1 (sequential): recv into a local buffer until RoundEnd arrives.
+ *   ZMQ recv is not thread-safe, so this must stay single-threaded.
+ *
+ * Phase 2 (parallel, OpenMP): verify + hash each tx concurrently.
+ *   transaction_verify() is read-only and thread-safe.
+ *
+ * Phase 3 (sequential): fold individual tx hashes into the merkle root.
+ *   Each step depends on the previous hash, so this cannot be parallelised.
  */
 static ShardSummary process_transactions(void* pull_sock, uint32_t shard_id) {
     ShardSummary summary;
     memset(&summary, 0, sizeof(ShardSummary));
     summary.shard_id = shard_id;
 
-    uint8_t running_hash[32];
-    memset(running_hash, 0, 32);
+    /* --- Phase 1: buffer all txs for this round --- */
+    uint32_t    buf_cap    = 512;
+    Transaction* tx_buf    = (Transaction*)safe_malloc(buf_cap * sizeof(Transaction));
+    uint8_t*     pubkey_buf = (uint8_t*)safe_malloc((size_t)buf_cap * 32);
+    uint32_t    buf_count  = 0;
+    uint32_t    expected   = 0;
+    int         got_end    = 0;
 
-    /* First receive the RoundEnd marker to know how many txs to expect */
-    RoundEnd end;
-    uint32_t expected = 0;
-    while (1) {
-        uint8_t buf[sizeof(Transaction)];
-        int size = zmq_recv(pull_sock, buf, sizeof(buf), 0);
+    while (!got_end || buf_count < expected) {
+        uint8_t raw[sizeof(TxWithPubkey)];
+        int size = zmq_recv(pull_sock, raw, sizeof(raw), 0);
+        if (size < 0) continue;
+
         if (size == (int)sizeof(RoundEnd)) {
-            memcpy(&end, buf, sizeof(RoundEnd));
+            RoundEnd end;
+            memcpy(&end, raw, sizeof(RoundEnd));
             expected = end.tx_count;
-            break;
-        }
-        /* A tx arrived before the RoundEnd — process it now */
-        if (size == (int)sizeof(Transaction)) {
-            Transaction tx;
-            memcpy(&tx, buf, sizeof(Transaction));
-            if (g_proc_us > 0) usleep(g_proc_us);
-            summary.tx_count++;
-            summary.total_fees += tx.fee;
-            uint8_t tx_hash[TX_HASH_SIZE];
-            transaction_compute_hash(&tx, tx_hash);
-            uint8_t combined[32 + TX_HASH_SIZE];
-            memcpy(combined, running_hash, 32);
-            memcpy(combined + 32, tx_hash, TX_HASH_SIZE);
-            sha256(combined, sizeof(combined), running_hash);
+            got_end  = 1;
+        } else if (size == (int)sizeof(TxWithPubkey)) {
+            if (buf_count >= buf_cap) {
+                buf_cap *= 2;
+                tx_buf     = (Transaction*)realloc(tx_buf, buf_cap * sizeof(Transaction));
+                pubkey_buf = (uint8_t*)realloc(pubkey_buf, (size_t)buf_cap * 32);
+            }
+            TxWithPubkey* twp = (TxWithPubkey*)raw;
+            memcpy(&tx_buf[buf_count], &twp->tx, sizeof(Transaction));
+            memcpy(pubkey_buf + (size_t)buf_count * 32, twp->pubkey, 32);
+            buf_count++;
         }
     }
 
-    /* Drain remaining txs up to expected count */
-    while (summary.tx_count < expected) {
-        Transaction tx;
-        int size = zmq_recv(pull_sock, &tx, sizeof(Transaction), 0);
-        if (size != (int)sizeof(Transaction)) continue;
-        if (g_proc_us > 0) usleep(g_proc_us);
-        summary.tx_count++;
-        summary.total_fees += tx.fee;
-        uint8_t tx_hash[TX_HASH_SIZE];
-        transaction_compute_hash(&tx, tx_hash);
+    if (buf_count == 0) {
+        free(tx_buf);
+        free(pubkey_buf);
+        return summary;
+    }
+
+    /* --- Phase 2: parallel Ed25519 verification + hash --- */
+    uint8_t*  tx_hashes  = (uint8_t*)safe_malloc((size_t)buf_count * TX_HASH_SIZE);
+    uint64_t  total_fees = 0;
+
+    #pragma omp parallel for reduction(+:total_fees) num_threads(g_par_threads) schedule(static)
+    for (int i = 0; i < (int)buf_count; i++) {
+        const uint8_t* pubkey = pubkey_buf + (size_t)i * 32;
+        if (!is_zero(pubkey, 32))
+            transaction_verify_ed25519(&tx_buf[i], pubkey);
+        else
+            transaction_verify(&tx_buf[i]);
+        total_fees += tx_buf[i].fee;
+        transaction_compute_hash(&tx_buf[i], tx_hashes + (size_t)i * TX_HASH_SIZE);
+    }
+
+    /* --- Phase 3: sequential merkle root fold --- */
+    uint8_t running_hash[32];
+    memset(running_hash, 0, 32);
+    for (uint32_t i = 0; i < buf_count; i++) {
         uint8_t combined[32 + TX_HASH_SIZE];
-        memcpy(combined, running_hash, 32);
-        memcpy(combined + 32, tx_hash, TX_HASH_SIZE);
+        memcpy(combined,      running_hash,                          32);
+        memcpy(combined + 32, tx_hashes + (size_t)i * TX_HASH_SIZE, TX_HASH_SIZE);
         sha256(combined, sizeof(combined), running_hash);
     }
 
+    summary.tx_count   = buf_count;
+    summary.total_fees = total_fees;
     memcpy(summary.merkle_root, running_hash, 32);
+
+    free(tx_buf);
+    free(pubkey_buf);
+    free(tx_hashes);
     return summary;
 }
 
@@ -172,7 +202,7 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
 
     while (1) {
         /* Block until the assigner sends a DispatchHeader */
-        uint8_t buf[sizeof(Transaction)];
+        uint8_t buf[sizeof(TxWithPubkey)];
         int size = zmq_recv(pull_tx, buf, sizeof(buf), 0);
         if (size < 0) continue;
 
@@ -345,8 +375,8 @@ int main(int argc, char* argv[]) {
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--num-shards") == 0 && i + 1 < argc)
             num_shards = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--proc-us") == 0 && i + 1 < argc)
-            g_proc_us = (unsigned int)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--par-threads") == 0 && i + 1 < argc)
+            g_par_threads = atoi(argv[++i]);
         else if (strcmp(argv[i], "--block-size") == 0 && i + 1 < argc)
             g_block_size = atoi(argv[++i]);
     }

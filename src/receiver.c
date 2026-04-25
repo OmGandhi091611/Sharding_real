@@ -86,10 +86,10 @@ static Transaction* pb_to_tx(const Blockchain__Transaction* pt) {
         memcpy(tx->dest_address, pt->dest_address.data, 20);
     tx->value = pt->value;
     tx->fee   = pt->fee;
-    if (pt->signature.data && pt->signature.len > 0) {
-        size_t n = pt->signature.len < 48 ? pt->signature.len : 48;
-        memcpy(tx->signature, pt->signature.data, n);
-    }
+    if (pt->signature.data && pt->signature.len >= 64)
+        memcpy(tx->signature, pt->signature.data, 64);
+    else if (pt->signature.data && pt->signature.len > 0)
+        memcpy(tx->signature, pt->signature.data, pt->signature.len);
     return tx;
 }
 
@@ -159,16 +159,26 @@ int main(int argc, char* argv[]) {
                 if (g_sleep_ms > 0)
                     usleep((useconds_t)(g_sleep_ms * 1000));
                 for (size_t i = 0; i < batch->n_transactions; i++) {
-                    Transaction* tx = pb_to_tx(batch->transactions[i]);
-                    if (g_verify && !transaction_verify(tx)) {
-                        rejected++;
-                        transaction_destroy(tx);
-                    } else {
-                        if (!mempool_add(g_mempool, tx))
+                    Blockchain__Transaction* pt = batch->transactions[i];
+                    uint8_t pubkey[32] = {0};
+                    if (pt->public_key.data && pt->public_key.len >= 32)
+                        memcpy(pubkey, pt->public_key.data, 32);
+
+                    Transaction* tx = pb_to_tx(pt);
+                    if (g_verify) {
+                        bool valid = !is_zero(pubkey, 32)
+                                     ? transaction_verify_ed25519(tx, pubkey)
+                                     : transaction_verify(tx);
+                        if (!valid) {
+                            rejected++;
                             transaction_destroy(tx);
-                        else
-                            accepted++;
+                            continue;
+                        }
                     }
+                    if (!mempool_add(g_mempool, tx, pubkey))
+                        transaction_destroy(tx);
+                    else
+                        accepted++;
                 }
                 total_received += (uint64_t)(accepted + rejected);
                 blockchain__transaction_batch__free_unpacked(batch, NULL);

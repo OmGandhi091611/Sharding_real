@@ -1,20 +1,22 @@
 #!/bin/bash
-# Usage: ./scripts/run_shards.sh [--num-shards N] [--proc-us N] [--block-size N]
+# Usage: ./scripts/run_shards.sh [--num-shards N] [--block-size N]
 # Kills any existing receiver/shard workers, starts fresh.
 # Leader output (block time + TPS) prints to this terminal.
 
 NUM_SHARDS=4
 BASE_PORT=5560
 BUILD=./build
-PROC_US=1000
 BLOCK_SIZE=512
+PAR_THREADS=4
 LOG_DIR=./logs
+VERIFY=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --num-shards)  NUM_SHARDS="$2";  shift 2 ;;
-        --proc-us)     PROC_US="$2";     shift 2 ;;
-        --block-size)  BLOCK_SIZE="$2";  shift 2 ;;
+        --num-shards)   NUM_SHARDS="$2";   shift 2 ;;
+        --block-size)   BLOCK_SIZE="$2";   shift 2 ;;
+        --par-threads)  PAR_THREADS="$2";  shift 2 ;;
+        --verify)       VERIFY="--verify"; shift ;;
         *) echo "Unknown arg: $1"; shift ;;
     esac
 done
@@ -43,16 +45,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Starting receiver (block-size=$BLOCK_SIZE, num-shards=$NUM_SHARDS)..."
-$BUILD/receiver --num-shards $NUM_SHARDS --block-size $BLOCK_SIZE > "$LOG_DIR/receiver.log" 2>&1 &
+echo "Starting receiver (block-size=$BLOCK_SIZE, num-shards=$NUM_SHARDS${VERIFY:+, verify=on})..."
+$BUILD/receiver --num-shards $NUM_SHARDS --block-size $BLOCK_SIZE $VERIFY > "$LOG_DIR/receiver.log" 2>&1 &
 sleep 0.5
 
-echo "Starting $NUM_SHARDS shard workers (proc-us=$PROC_US)..."
+echo "Starting $NUM_SHARDS shard workers (par-threads=$PAR_THREADS)..."
 
 # Start followers (shards 1..N-1) in background
 for i in $(seq 1 $((NUM_SHARDS - 1))); do
     PORT=$((BASE_PORT + i))
-    $BUILD/shard_worker $i $PORT --num-shards $NUM_SHARDS --proc-us $PROC_US \
+    $BUILD/shard_worker $i $PORT --num-shards $NUM_SHARDS --par-threads $PAR_THREADS \
         > "$LOG_DIR/shard_${i}.log" 2>&1 &
 done
 
@@ -67,4 +69,4 @@ echo "Shard logs:   tail -f $LOG_DIR/shard_1.log  (and shard_2, shard_3, ...)"
 echo ""
 
 # Start leader in foreground — block output prints here
-$BUILD/shard_worker 0 $BASE_PORT --num-shards $NUM_SHARDS --proc-us $PROC_US --block-size $BLOCK_SIZE
+$BUILD/shard_worker 0 $BASE_PORT --num-shards $NUM_SHARDS --par-threads $PAR_THREADS --block-size $BLOCK_SIZE

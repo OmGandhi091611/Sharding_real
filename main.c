@@ -193,10 +193,12 @@ int main(int argc, char* argv[]) {
                         pb_arr[i].dest_address.len = 20;
                         pb_arr[i].value = raw_txs[i]->value;
                         pb_arr[i].fee = raw_txs[i]->fee;
-                        if (!is_zero(raw_txs[i]->signature, 48)) {
+                        if (!is_zero(raw_txs[i]->signature, 64)) {
                             pb_arr[i].signature.data = raw_txs[i]->signature;
-                            pb_arr[i].signature.len = 48;
+                            pb_arr[i].signature.len  = 64;
                         }
+                        pb_arr[i].public_key.data = wallet->public_key;
+                        pb_arr[i].public_key.len  = 32;
                         pb_ptrs[i] = &pb_arr[i];
                     }
                     Blockchain__TransactionBatch batch = BLOCKCHAIN__TRANSACTION_BATCH__INIT;

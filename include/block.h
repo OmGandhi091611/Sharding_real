@@ -2,6 +2,17 @@
 #define BLOCK_H
 
 #include <stdint.h>
+#include "transaction.h"
+
+/*
+ * TX + Ed25519 pubkey bundled for ZMQ dispatch (SegWit-style: pubkey travels
+ * alongside the compact 128-byte TX, not inside it).
+ * Shard workers use this to call transaction_verify_ed25519().
+ */
+typedef struct {
+    Transaction tx;         // 128 bytes on-chain TX
+    uint8_t     pubkey[32]; // 32 bytes Ed25519 public key
+} TxWithPubkey;             // 160 bytes total
 
 /* Sent by the shard assigner to the leader shard at the start of each round */
 typedef struct {

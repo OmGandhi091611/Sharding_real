@@ -19,9 +19,10 @@ GEN_OBJS = $(BUILD_DIR)/main.o \
            $(BUILD_DIR)/blockchain.pb-c.o
 GENERATOR = $(BUILD_DIR)/generator
 
-# Receiver: receiver.c + transaction + common + blake3 + proto (no wallet)
+# Receiver: receiver.c + transaction + wallet + common + blake3 + proto
 REC_OBJS = $(BUILD_DIR)/receiver.o \
            $(BUILD_DIR)/transaction.o \
+           $(BUILD_DIR)/wallet.o \
            $(BUILD_DIR)/common.o \
            $(BUILD_DIR)/blake3.o \
            $(BUILD_DIR)/node.o \
@@ -34,6 +35,7 @@ RECEIVER = $(BUILD_DIR)/receiver
 # Shard worker: one process per shard
 SW_OBJS = $(BUILD_DIR)/shard_worker.o \
           $(BUILD_DIR)/transaction.o \
+          $(BUILD_DIR)/wallet.o \
           $(BUILD_DIR)/common.o \
           $(BUILD_DIR)/blake3.o \
           $(BUILD_DIR)/blockchain.pb-c.o

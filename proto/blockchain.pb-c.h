@@ -75,13 +75,17 @@ struct  Blockchain__Transaction
    */
   uint32_t fee;
   /*
-   * 48-byte BLS signature
+   * 64-byte Ed25519 signature
    */
   ProtobufCBinaryData signature;
+  /*
+   * 32-byte Ed25519 public key (SegWit-style: travels with TX, not stored in it)
+   */
+  ProtobufCBinaryData public_key;
 };
 #define BLOCKCHAIN__TRANSACTION__INIT \
  { PROTOBUF_C_MESSAGE_INIT (&blockchain__transaction__descriptor) \
-    , 0, 0, {0,NULL}, {0,NULL}, 0, 0, {0,NULL} }
+    , 0, 0, {0,NULL}, {0,NULL}, 0, 0, {0,NULL}, {0,NULL} }
 
 
 struct  Blockchain__BlockHeader

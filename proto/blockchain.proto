@@ -9,10 +9,11 @@ message Transaction {
     uint64 nonce = 1;
     uint32 expiry_block = 2;
     bytes source_address = 3;   // 20 bytes
-    bytes dest_address = 4;      // 20 bytes
+    bytes dest_address = 4;     // 20 bytes
     uint64 value = 5;
     uint32 fee = 6;
-    bytes signature = 7;        // 48 bytes BLS
+    bytes signature = 7;        // 64 bytes Ed25519 signature
+    bytes public_key = 8;       // 32 bytes Ed25519 public key (SegWit-style separation)
 }
 
 message TransactionBatch {
