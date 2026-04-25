@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <pthread.h>
 
-#define MEMPOOL_MAX_SIZE 65536
+#define MEMPOOL_MAX_SIZE 1048576
 
 typedef struct {
     Transaction**   txs;

@@ -167,6 +167,10 @@ static void run_leader(void* ctx, int shard_id, int tx_port, int num_shards) {
     char addr[64];
 
     void* pull_tx = zmq_socket(ctx, ZMQ_PULL);
+    /* Unlimited recv buffer — prevents deadlock when the assigner fills the
+     * ZMQ queue before the leader drains it (leader blocks on pull_done first). */
+    int hwm = 0;
+    zmq_setsockopt(pull_tx, ZMQ_RCVHWM, &hwm, sizeof(hwm));
     snprintf(addr, sizeof(addr), "tcp://*:%d", tx_port);
     if (zmq_bind(pull_tx, addr) != 0) {
         fprintf(stderr, "[shard %d | LEADER] failed to bind tx port: %s\n",
@@ -318,6 +322,8 @@ static void run_follower(void* ctx, int shard_id, int tx_port, int num_shards) {
     char addr[64];
 
     void* pull_tx = zmq_socket(ctx, ZMQ_PULL);
+    int hwm = 0;
+    zmq_setsockopt(pull_tx, ZMQ_RCVHWM, &hwm, sizeof(hwm));
     snprintf(addr, sizeof(addr), "tcp://*:%d", tx_port);
     if (zmq_bind(pull_tx, addr) != 0) {
         fprintf(stderr, "[shard %d | FOLLOWER] failed to bind tx port: %s\n",

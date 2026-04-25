@@ -31,6 +31,10 @@ ShardAssigner* shard_assigner_create(uint32_t num_shards, const char* base_addr,
         snprintf(sa->shard_addrs[i], sizeof(sa->shard_addrs[i]),
                 "tcp://%s:%u", base_addr, (unsigned)(base_port + i));
         sa->push_socks[i] = zmq_socket(sa->zmq_ctx, ZMQ_PUSH);
+        /* Unlimited send buffer — prevents deadlock when block_size exceeds
+         * the default HWM (1000 msgs) while the leader is waiting on pull_done. */
+        int hwm = 0;
+        zmq_setsockopt(sa->push_socks[i], ZMQ_SNDHWM, &hwm, sizeof(hwm));
         if (zmq_connect(sa->push_socks[i], sa->shard_addrs[i]) != 0) {
             fprintf(stderr, "shard_assigner: failed to connect to shard %u at %s\n",
                     i, sa->shard_addrs[i]);
@@ -77,7 +81,7 @@ void shard_assigner_dispatch(ShardAssigner* sa, Mempool* pool, uint64_t round_st
     uint32_t exact = (block_size / sa->num_shards) * sa->num_shards;
     if (exact == 0) exact = sa->num_shards;
 
-    Transaction* drain_buf[MEMPOOL_MAX_SIZE];
+    Transaction** drain_buf = (Transaction**)safe_malloc((size_t)MEMPOOL_MAX_SIZE * sizeof(Transaction*));
     uint8_t (*pubkey_buf)[32] = (uint8_t (*)[32])safe_malloc((size_t)MEMPOOL_MAX_SIZE * 32);
     uint32_t count = mempool_drain(pool, drain_buf, pubkey_buf, exact);
 
@@ -92,6 +96,7 @@ void shard_assigner_dispatch(ShardAssigner* sa, Mempool* pool, uint64_t round_st
         sa->assigned_counts[shard_id]++;
         transaction_destroy(tx);
     }
+    free(drain_buf);
     free(pubkey_buf);
 
     /* Send RoundEnd marker to every shard so workers know exactly when to stop draining */
