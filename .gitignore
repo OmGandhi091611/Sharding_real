@@ -58,3 +58,6 @@ build/
 
 # Claude Code
 .claude/
+
+# Python virtual environment
+environment/
