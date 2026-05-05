@@ -27,31 +27,28 @@ nrows = (len(block_sizes) + ncols - 1) // ncols
 fig, axes = plt.subplots(nrows, ncols, figsize=(18, 5 * nrows), sharey=False)
 axes = axes.flatten()
 
-style = {
-    "Real":       {"color": "#1f77b4", "marker": "o", "linestyle": "-"},
-    "Simulation": {"color": "#ff7f0e", "marker": "s", "linestyle": "--"},
-}
+sources = ["Real", "Simulation"]
+colors  = {"Real": "#1f77b4", "Simulation": "#ff7f0e"}
+bar_width = 0.35
+x = np.arange(len(shard_values))
 
 for i, bs in enumerate(block_sizes):
     ax = axes[i]
-    for source in ["Real", "Simulation"]:
+    for j, source in enumerate(sources):
         subset = df[(df["block_size"] == bs) & (df["source"] == source)].sort_values("num_shards")
         if subset.empty:
             continue
-        s = style[source]
-        ax.plot(
-            subset["num_shards"], subset["tps"],
-            color=s["color"], marker=s["marker"], linestyle=s["linestyle"],
-            label=source, linewidth=2, markersize=6,
-        )
+        offset = (j - 0.5) * bar_width
+        ax.bar(x + offset, subset["tps"].values, width=bar_width,
+               color=colors[source], label=source, edgecolor="white", linewidth=0.4)
 
     ax.set_title(f"Block Size {bs:,}", fontsize=11, fontweight="bold")
     ax.set_xlabel("Number of Shards", fontsize=10)
     ax.set_ylabel("TPS", fontsize=10)
-    ax.set_xticks(shard_values)
+    ax.set_xticks(x)
     ax.set_xticklabels([str(s) for s in shard_values], fontsize=9)
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
     ax.legend(fontsize=9)
 
 for j in range(i + 1, len(axes)):
